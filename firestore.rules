@@ -1,0 +1,60 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email in
+          get(/databases/$(database)/documents/config/admins).data.emails;
+    }
+
+    // List of admin emails. Only the admin sets this up (via Firebase console),
+    // never through the app itself. Readable by any signed-in user so the client
+    // can determine its own role; it contains no student data.
+    match /config/admins {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Student roster — names only. Readable by everyone (including signed-out
+    // visitors), writable only by the admin.
+    match /students/{studentId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Private contact info, kept in a separate collection so rules can grant/deny
+    // access per-document instead of per-field. Only the admin may ever read or
+    // write this — not even other registered users.
+    match /studentContacts/{studentId} {
+      allow read, write: if isAdmin();
+    }
+
+    // Weekly notes & reminders — public read, admin-only write.
+    match /notes/{noteId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Reader-of-the-week sign-ups, one document per Sunday (doc id = weekId).
+    // Anyone can claim an OPEN slot for an existing student (first write wins —
+    // Firestore only allows `create` when the document doesn't already exist).
+    // The admin can reassign or clear any slot; a signed-in user who claimed a
+    // slot themselves can also cancel it.
+    match /readerSchedule/{weekId} {
+      allow read: if true;
+      allow create: if
+        exists(/databases/$(database)/documents/students/$(request.resource.data.studentId)) &&
+        request.resource.data.studentName is string &&
+        request.resource.data.weekId == weekId;
+      allow update: if isAdmin();
+      allow delete: if isAdmin() ||
+        (isSignedIn() && resource.data.signedUpByUid == request.auth.uid);
+    }
+  }
+}
